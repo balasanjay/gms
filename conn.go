@@ -19,7 +19,7 @@ type conn struct {
 	// Buffered writer, wrapping rwc.
 	bw *bufio.Writer
 
-	// The size of the packet being written to bw. Call BeginPacketWrite to set
+	// The size of the packet being written to bw. Call BeginPacket to set
 	// this size.
 	curPacketSizeRemaining int64
 	writeCap               int64
@@ -39,7 +39,7 @@ type conn struct {
 	maxSendPacketSize uint32
 
 	// A scratch space buffer
-	scratchBuf *bytes.Buffer
+	reuseBuf *bytes.Buffer
 
 	// Capabilities flags for this connection
 	serverFlags connectionFlag
@@ -49,6 +49,9 @@ type conn struct {
 
 	// The current sequence id.
 	seqId uint8
+
+	// Temporary writing area for many functions to avoid allocating.
+	scratch [40]byte
 }
 
 func newConn(rwc io.ReadWriteCloser) *conn {
@@ -78,7 +81,7 @@ func newConn(rwc io.ReadWriteCloser) *conn {
 	c.maxRecvPacketSize = (1 << 24) - 1
 	c.maxSendPacketSize = (1 << 24) - 1
 
-	c.scratchBuf = bytes.NewBuffer(nil)
+	c.reuseBuf = bytes.NewBuffer(nil)
 
 	return c
 }
@@ -125,8 +128,8 @@ func (c *conn) Read(buf []byte) (int, error) {
 	return n, err
 }
 
-// BeginPacketWrite sets up the conn to write a packet with size bytes.
-func (c *conn) BeginPacketWrite(size int64) {
+// BeginPacket sets up the conn to write a packet with size bytes.
+func (c *conn) BeginPacket(size int64) {
 	if c.curPacketSizeRemaining != 0 || size == 0 || c.writeCap != 0 {
 		panic("internal error, miscalculated packet size")
 	}
@@ -134,11 +137,23 @@ func (c *conn) BeginPacketWrite(size int64) {
 	c.curPacketSizeRemaining = size
 }
 
+func (c *conn) EndPacket(flush flushPolicy) error {
+	if c.curPacketSizeRemaining != 0 || c.writeCap != 0 {
+		panic("internal error, miscalculated packet size")
+	}
+
+	if !flush {
+		return nil
+	}
+	return c.bw.Flush()
+}
+
 func (c *conn) Write(b []byte) (int, error) {
 	if int64(len(b)) > c.curPacketSizeRemaining {
 		panic("internal error, write larger than calculated packet size")
 	}
 
+	var buf [4]byte
 	written := 0
 
 	for len(b) > 0 {
@@ -148,15 +163,14 @@ func (c *conn) Write(b []byte) (int, error) {
 				newWriteCap = c.curPacketSizeRemaining
 			}
 
-			var header [4]byte
-
-			header[0] = byte(newWriteCap)
-			header[1] = byte(newWriteCap >> 8)
-			header[2] = byte(newWriteCap >> 16)
-			header[3] = c.seqId
+			buf[0] = byte(newWriteCap)
+			buf[1] = byte(newWriteCap >> 8)
+			buf[2] = byte(newWriteCap >> 16)
+			buf[3] = c.seqId
 			c.seqId++
 
-			n, err := c.bw.Write(header[:])
+			n, err := c.bw.Write(buf[:4])
+			// fmt.Printf("Sent header with size=%v, seq=%v\n", newWriteCap, c.seqId-1)
 			if err != nil {
 				return written, err
 			} else if n != 4 {
@@ -168,9 +182,14 @@ func (c *conn) Write(b []byte) (int, error) {
 			continue
 		}
 
-		n, err := c.bw.Write(b[:c.writeCap])
+		nextSendSize := c.writeCap
+		if bsize := int64(len(b)); bsize < nextSendSize {
+			nextSendSize = bsize
+		}
 
-		b = b[c.writeCap:]
+		n, err := c.bw.Write(b[:nextSendSize])
+		// fmt.Printf("Sent bytes=[%x]\n", b[:nextSendSize])
+		b = b[n:]
 		c.curPacketSizeRemaining -= int64(n)
 		c.writeCap -= int64(n)
 		written += n
@@ -188,28 +207,26 @@ func (c *conn) Write(b []byte) (int, error) {
 // at packet boundaries, or at the beginning of a connection.
 func (c *conn) readPacketHeader() error {
 	var (
-		buf       [4]byte
 		err       error
 		packetLen uint32
 		nextSeq   uint8
+		buf       [4]byte
 	)
 
-	_, err = io.ReadAtLeast(c.br, buf[:], len(buf))
-	if err == nil {
-		// Read packet length
-		packetLen = uint32(buf[0]) |
-			uint32(buf[1])<<8 |
-			uint32(buf[2])<<16
-
-		// Read sequence number
-		nextSeq = buf[3]
+	err = readExactly(c.br, buf[:4])
+	if err != nil {
+		return err
 	}
 
-	if err == io.EOF {
-		return io.ErrUnexpectedEOF
-	} else if err != nil {
-		return err
-	} else if packetLen == 0 {
+	// Read packet length
+	packetLen = uint32(buf[0]) |
+		uint32(buf[1])<<8 |
+		uint32(buf[2])<<16
+
+	// Read sequence number
+	nextSeq = buf[3]
+
+	if packetLen == 0 {
 		return errors.New("unexpected 0-length packet")
 	} else if nextSeq != c.seqId {
 		return errors.New("unexpected sequence number")
@@ -235,15 +252,15 @@ func (c *conn) handshake(username, password, db string) error {
 		return err
 	}
 
-	c.scratchBuf.Reset()
+	c.reuseBuf.Reset()
 
-	_, err = io.Copy(c.scratchBuf, c)
+	_, err = io.Copy(c.reuseBuf, c)
 	if err != nil {
 		panic(fmt.Errorf("io.Copy error: %v", err))
 		return err
 	}
 
-	buf := c.scratchBuf.Bytes()
+	buf := c.reuseBuf.Bytes()
 
 	// First, we have the protocol version.
 	if buf[0] != 0xa {
@@ -261,7 +278,6 @@ func (c *conn) handshake(username, password, db string) error {
 	var (
 		passwdChallenge [20]byte
 		passwdLen       = 0
-		tempbuf         [20]byte
 	)
 
 	// Next, we have the first 8 bytes of the password challenge data.
@@ -309,12 +325,12 @@ func (c *conn) handshake(username, password, db string) error {
 		passwdLen += 12
 	}
 
-	// NOTE(sanjay): scratchBuf is an in-memory buffer, so we don't check write
+	// NOTE(sanjay): reuseBuf is an in-memory buffer, so we don't check write
 	// errors in this next section.
 
 	// Now that we've read the server's half of the handshake, let's write our
-	// half to the scratchBuf.
-	c.scratchBuf.Reset()
+	// half to the reuseBuf.
+	c.reuseBuf.Reset()
 
 	// These are the capabilities this prototype supports
 	clientFlags := flagProtocol41 |
@@ -322,50 +338,62 @@ func (c *conn) handshake(username, password, db string) error {
 		flagLongPassword |
 		flagTransactions
 
-	binary.Write(c.scratchBuf, binary.LittleEndian, uint32(clientFlags))
-	binary.Write(c.scratchBuf, binary.LittleEndian, uint32(0))
-	binary.Write(c.scratchBuf, binary.LittleEndian, uint8(c.charset))
-	c.scratchBuf.Write(zero[0:23])
-	fmt.Fprintf(c.scratchBuf, "%s\x00", username)
+	if len(db) > 0 {
+		clientFlags |= flagConnectWithDB
+	}
+
+	binary.Write(c.reuseBuf, binary.LittleEndian, uint32(clientFlags))
+	binary.Write(c.reuseBuf, binary.LittleEndian, uint32(0))
+	binary.Write(c.reuseBuf, binary.LittleEndian, uint8(c.charset))
+	c.reuseBuf.Write(zero[0:23])
+	fmt.Fprintf(c.reuseBuf, "%s\x00", username)
 
 	if len(password) > 0 {
 		// Do some password magic here
 		hash := sha1.New()
 		hash.Write([]byte(password))
-		stage1 := hash.Sum(nil)
+		hash.Sum(c.scratch[:20])
+
+		// c.scratch[0:20] == SHA1(password)
 
 		hash.Reset()
-		hash.Write(tempbuf[:])
-		hash.Sum(tempbuf[:])
+		hash.Write(c.scratch[:20])
+		hash.Sum(c.scratch[20:40])
+
+		// c.scratch[0:20] == SHA1(password)
+		// c.scratch[20:40] == SHA1(SHA1(password))
 
 		hash.Reset()
 		hash.Write(passwdChallenge[:passwdLen])
-		hash.Write(tempbuf[:])
-		hash.Sum(tempbuf[:])
+		hash.Write(c.scratch[20:40])
+		hash.Sum(c.scratch[20:40])
 
-		for i := range tempbuf {
-			tempbuf[i] ^= stage1[i]
+		// c.scratch[0:20] = SHA1(password)
+		// c.scratch[20:40] = SHA1(challenge + SHA1(SHA1(password)))
+
+		for i := 0; i < 20; i++ {
+			c.scratch[i+20] ^= c.scratch[i]
 		}
 
-		fmt.Fprintf(c.scratchBuf, "%c", len(tempbuf))
-		c.scratchBuf.Write(tempbuf[:])
+		fmt.Fprintf(c.reuseBuf, "%c", 20)
+		c.reuseBuf.Write(c.scratch[20:40])
 	} else {
-		fmt.Fprintf(c.scratchBuf, "%c", 0)
+		fmt.Fprintf(c.reuseBuf, "%c", 0)
 	}
 
 	if len(db) > 0 {
-		fmt.Fprintf(c.scratchBuf, "%s\x00", db)
+		fmt.Fprintf(c.reuseBuf, "%s\x00", db)
 	}
 
-	c.BeginPacketWrite(int64(c.scratchBuf.Len()))
+	c.BeginPacket(int64(c.reuseBuf.Len()))
 
-	_, err = c.Write(c.scratchBuf.Bytes())
-	c.scratchBuf.Reset()
+	_, err = c.Write(c.reuseBuf.Bytes())
+	c.reuseBuf.Reset()
 	if err != nil {
 		return err
 	}
 
-	err = c.bw.Flush()
+	err = c.EndPacket(FLUSH)
 	if err != nil {
 		return err
 	}
@@ -375,14 +403,12 @@ func (c *conn) handshake(username, password, db string) error {
 		return err
 	}
 
-	_, err = io.ReadAtLeast(c, tempbuf[0:1], 1)
-	if err == io.EOF {
-		return io.ErrUnexpectedEOF
-	} else if err != nil {
+	err = readExactly(c, c.scratch[:1])
+	if err != nil {
 		return err
 	}
 
-	if tempbuf[0] != 0 {
+	if c.scratch[0] != 0 {
 		// TODO(sanjay): explain this and retrieve the rest of the info
 		// from the connection
 		return errors.New("auth failed")
@@ -398,8 +424,182 @@ func (c *conn) Close() error {
 	panic("unimplemented")
 }
 
-func (c *conn) Prepare(string) (drv.Stmt, error) {
-	panic("unimplemented")
+func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
+	c.seqId = 0
+
+	c.BeginPacket(1 + int64(len(sqlStr)))
+
+	c.scratch[0] = comStmtPrepare
+	_, err := c.Write(c.scratch[:1])
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = io.WriteString(c, sqlStr)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.EndPacket(FLUSH)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.AdvancePacket()
+	if err != nil {
+		return nil, err
+	}
+
+	err = readExactly(c, c.scratch[:1])
+	if err != nil {
+		return nil, err
+	}
+
+	if c.scratch[0] != 0 {
+
+		// TODO(sanjay): explain this and retrieve the rest of the info
+		// from the connection
+		return nil, errors.New("prepare failed")
+	}
+
+	s := &stmt{}
+
+	err = readExactly(c, c.scratch[1:12])
+	if err != nil {
+		return nil, err
+	}
+
+	s.id = binary.LittleEndian.Uint32(c.scratch[1:5])
+	numColumns := binary.LittleEndian.Uint16(c.scratch[5:7])
+	numParams := binary.LittleEndian.Uint16(c.scratch[7:9])
+	// c.scratch[9] is reserved, skip it
+	// c.scratch[10:12] is the warning count, skip it
+
+	fmt.Printf("s.id=%d, numColumns=%d, numParams=%d\n", s.id, numColumns, numParams)
+
+	s.inputFields = make([]field, numParams)
+	s.outputFields = make([]field, numColumns)
+
+	for i := uint16(0); i < numParams; i++ {
+		err = c.ReadFieldDefinition(&s.inputFields[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if numParams > 0 {
+		err = c.ReadEOFPacket()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for i := uint16(0); i < numColumns; i++ {
+		err = c.ReadFieldDefinition(&s.outputFields[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if numColumns > 0 {
+		err = c.ReadEOFPacket()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return s, nil
+}
+
+func (c *conn) ReadFieldDefinition(f *field) error {
+	err := c.AdvancePacket()
+	if err != nil {
+		return err
+	}
+
+	// Catalog name
+	err = c.SkipLengthEncodedString()
+	if err != nil {
+		return err
+	}
+
+	// Schema name
+	err = c.SkipLengthEncodedString()
+	if err != nil {
+		return err
+	}
+
+	// 	Table name
+	tableNameLen, err := c.ReadLengthEncodedInt()
+	if err != nil {
+		return err
+	}
+
+	c.reuseBuf.Reset()
+
+	c.reuseBuf.Grow(int(tableNameLen))
+	_, err = io.CopyN(c.reuseBuf, c, int64(tableNameLen))
+	if err != nil {
+		return err
+	}
+
+	// Physical table name
+	err = c.SkipLengthEncodedString()
+	if err != nil {
+		return err
+	}
+
+	// Column name
+	colNameLen, err := c.ReadLengthEncodedInt()
+	if err != nil {
+		return err
+	}
+
+	if c.reuseBuf.Len() > 0 {
+		_ = c.reuseBuf.WriteByte('.') // in-memory buffer
+	}
+
+	c.reuseBuf.Grow(int(colNameLen))
+	_, err = io.CopyN(c.reuseBuf, c, int64(colNameLen))
+	if err != nil {
+		return err
+	}
+
+	f.name = c.reuseBuf.String()
+
+	// Physical column name
+	err = c.SkipLengthEncodedString()
+	if err != nil {
+		return err
+	}
+
+	err = readExactly(c, c.scratch[:11])
+	if err != nil {
+		return err
+	}
+
+	f.ftype = fieldType(c.scratch[6])
+	f.flag = fieldFlag(binary.LittleEndian.Uint16(c.scratch[7:9]))
+
+	return nil
+}
+
+func (c *conn) ReadEOFPacket() error {
+	err := c.AdvancePacket()
+	if err != nil {
+		return err
+	}
+
+	err = readExactly(c, c.scratch[:1])
+	if err != nil {
+		return err
+	}
+
+	if c.scratch[0] == 0xfe && c.lr.N <= 4 {
+		return nil
+	}
+
+	return errors.New("Did not find EOF packet, where expected")
 }
 
 var (
