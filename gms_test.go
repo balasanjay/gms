@@ -7,7 +7,7 @@ import (
 )
 
 func TestSimple(t *testing.T) {
-	db, err := sql.Open("gms", "tcp://root:asdas@localhost:3306?db=test&timeout=1s")
+	db, err := sql.Open("gms", "tcp://root:@localhost:3306?db=test&timeout=1s")
 	if err != nil {
 		t.Errorf("sql.Open error: %v", err)
 		return

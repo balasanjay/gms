@@ -30,6 +30,7 @@ func (d *driver) Open(dsn string) (drv.Conn, error) {
 	var (
 		username = ""
 		password = ""
+		db       = ""
 	)
 
 	if u.User != nil {
@@ -37,6 +38,10 @@ func (d *driver) Open(dsn string) (drv.Conn, error) {
 		if tmp, ok := u.User.Password(); ok {
 			password = tmp
 		}
+	}
+
+	if tmp := params.Get("db"); tmp != "" {
+		db = tmp
 	}
 
 	var (
@@ -67,13 +72,15 @@ func (d *driver) Open(dsn string) (drv.Conn, error) {
 		return nil, err
 	}
 
-	conn := newConn(nc)
+	c := newConn(nc)
 
-	// TODO(sanjay): authenticate
-	_ = username
-	_ = password
+	// We have to complete the handshake before we can use the connection.
+	err = c.handshake(username, password, db)
+	if err != nil {
+		return nil, err
+	}
 
-	return conn, nil
+	return c, nil
 }
 
 func init() {
