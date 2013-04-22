@@ -25,7 +25,27 @@ type stmt struct {
 }
 
 func (s *stmt) Close() error {
-	panic("unimplemented")
+	c := s.c
+	c.scratch[0] = comStmtClose
+	binary.LittleEndian.PutUint32(c.scratch[1:5], s.id)
+
+	c.BeginPacket(5)
+
+	_, err := c.Write(c.scratch[:5])
+	if err != nil {
+		return err
+	}
+
+	err = c.EndPacket(FLUSH)
+	if err != nil {
+		return err
+	}
+
+	s.c = nil
+	s.inputFields = nil
+	s.outputFields = nil
+
+	return nil
 }
 
 func (s *stmt) Exec(params []drv.Value) (drv.Result, error) {
