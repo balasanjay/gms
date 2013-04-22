@@ -462,7 +462,7 @@ func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
 		return nil, errors.New("prepare failed")
 	}
 
-	s := &stmt{}
+	s := &stmt{c: c}
 
 	err = readExactly(c, c.scratch[1:12])
 	if err != nil {

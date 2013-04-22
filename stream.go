@@ -1,6 +1,7 @@
 package gms
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/ioutil"
@@ -64,4 +65,36 @@ func (c *conn) SkipLengthEncodedString() error {
 	}
 
 	return nil
+}
+
+func (c *conn) WriteLengthEncodedInt(n uint64, measureOnly bool) (int, error) {
+	size := 0
+	if n < 251 {
+		size = 1
+		c.scratch[0] = byte(n)
+	} else if n < (1 << 16) {
+		size = 3
+		c.scratch[0] = 0xfc
+		binary.LittleEndian.PutUint16(c.scratch[1:3], uint16(n))
+	} else if n < (1 << 24) {
+		size = 4
+		c.scratch[0] = 0xfd
+		c.scratch[1] = byte(n)
+		c.scratch[2] = byte(n >> 8)
+		c.scratch[3] = byte(n >> 16)
+	} else {
+		size = 9
+		c.scratch[0] = 0xfe
+		binary.LittleEndian.PutUint64(c.scratch[1:9], n)
+	}
+
+	if measureOnly {
+		return size, nil
+	}
+
+	nw, err := c.Write(c.scratch[0:size])
+	if err != nil {
+		return 0, err
+	}
+	return nw, nil
 }

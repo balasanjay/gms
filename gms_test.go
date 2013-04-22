@@ -18,7 +18,8 @@ func TestSimple(t *testing.T) {
 	t.Logf("sql.Open took %v", time.Since(before))
 
 	_, err = db.Exec("CREATE TABLE test (value BOOL);")
-	// _, err = db.Exec("SELECT * FROM manualtest WHERE value = ?;")
+	_, err = db.Exec("SELECT * FROM manualtest WHERE value = ?;")
+	// _, err = db.Exec("SELECT * FROM manualtest WHERE value = ?;", 3)
 	if err != nil {
 		t.Errorf("db.Exec error: %v", err)
 		return
