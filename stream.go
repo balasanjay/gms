@@ -67,7 +67,7 @@ func (c *conn) SkipLengthEncodedString() error {
 	return nil
 }
 
-func (c *conn) WriteLengthEncodedInt(n uint64, measureOnly bool) (int, error) {
+func (c *conn) WriteLengthEncodedInt(w io.Writer, n uint64) (int, error) {
 	size := 0
 	if n < 251 {
 		size = 1
@@ -88,13 +88,12 @@ func (c *conn) WriteLengthEncodedInt(n uint64, measureOnly bool) (int, error) {
 		binary.LittleEndian.PutUint64(c.scratch[1:9], n)
 	}
 
-	if measureOnly {
-		return size, nil
-	}
-
 	nw, err := c.Write(c.scratch[0:size])
 	if err != nil {
 		return 0, err
+	} else if nw != size {
+		return 0, io.ErrShortWrite
 	}
+
 	return nw, nil
 }

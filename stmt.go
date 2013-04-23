@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"os"
 	"time"
@@ -125,7 +126,7 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 		size += numInputs * 2       // types
 
 		for _, v := range params {
-			paramSize, _, err := s.computeSizeAndType(v)
+			paramSize, _, err := s.WriteObj(ioutil.Discard, v)
 			if err != nil {
 				return err
 			}
@@ -186,7 +187,7 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 
 	// Types
 	for _, v := range params {
-		_, ftype, err := s.computeSizeAndType(v)
+		_, ftype, err := s.WriteObj(ioutil.Discard, v)
 		if err != nil {
 			return err
 		}
@@ -205,7 +206,7 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 			continue
 		}
 
-		err = s.WriteObj(params[i])
+		_, _, err = s.WriteObj(c, params[i])
 		if err != nil {
 			return err
 		}
@@ -220,79 +221,81 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 	return nil
 }
 
-func (s *stmt) computeSizeAndType(arg drv.Value) (int, fieldType, error) {
-	switch v := arg.(type) {
-	case int64:
-		// TODO(sanjay): optimize this, we can send them as tiny, short, or
-		// long, instead of longlong.
-		return 8, fieldTypeLongLong, nil
-	case float64:
-		return 8, fieldTypeDouble, nil
-	case bool:
-		return 1, fieldTypeTiny, nil
-	case []byte:
-		// TODO(sanjay): investigate what happens with super long slices
-		lenenc, _ := s.c.WriteLengthEncodedInt(uint64(len(v)), true) // measure
-		return len(v) + lenenc, fieldTypeString, nil
-	case string:
-		// TODO(sanjay): investigate what happens with super long slices
-		lenenc, _ := s.c.WriteLengthEncodedInt(uint64(len(v)), true) // measure
-		return len(v) + lenenc, fieldTypeString, nil
-	case time.Time:
-		if v.Nanosecond()/int(time.Microsecond) != 0 {
-			return 12, fieldTypeTimestamp, nil
-		}
-		if v.Second() != 0 || v.Minute() != 0 || v.Hour() != 0 {
-			return 8, fieldTypeTimestamp, nil
-		}
-		if v.Year() != 0 || v.Month() != 1 || v.Day() != 0 {
-			return 5, fieldTypeTimestamp, nil
-		}
-		return 1, fieldTypeTimestamp, nil
-	default:
-		return 0, 0, fmt.Errorf("Can't convert type: %T", arg)
-	}
-}
+// func (s *stmt) computeSizeAndType(arg drv.Value) (int, fieldType, error) {
+// 	switch v := arg.(type) {
+// 	case int64:
+// 		// TODO(sanjay): optimize this, we can send them as tiny, short, or
+// 		// long, instead of longlong.
+// 		return 8, fieldTypeLongLong, nil
+// 	case float64:
+// 		return 8, fieldTypeDouble, nil
+// 	case bool:
+// 		return 1, fieldTypeTiny, nil
+// 	case []byte:
+// 		// TODO(sanjay): investigate what happens with super long slices
+// 		lenenc, _ := s.c.WriteLengthEncodedInt(ioutil.Discard, uint64(len(v))) // measure
+// 		return len(v) + lenenc, fieldTypeString, nil
+// 	case string:
+// 		// TODO(sanjay): investigate what happens with super long slices
+// 		lenenc, _ := s.c.WriteLengthEncodedInt(ioutil.Discard, uint64(len(v))) // measure
+// 		return len(v) + lenenc, fieldTypeString, nil
+// 	case time.Time:
+// 		if v.Nanosecond()/int(time.Microsecond) != 0 {
+// 			return 12, fieldTypeTimestamp, nil
+// 		}
+// 		if v.Second() != 0 || v.Minute() != 0 || v.Hour() != 0 {
+// 			return 8, fieldTypeTimestamp, nil
+// 		}
+// 		if v.Year() != 0 || v.Month() != 1 || v.Day() != 0 {
+// 			return 5, fieldTypeTimestamp, nil
+// 		}
+// 		return 1, fieldTypeTimestamp, nil
+// 	default:
+// 		return 0, 0, fmt.Errorf("Can't convert type: %T", arg)
+// 	}
+// }
 
-func (s *stmt) WriteObj(arg drv.Value) error {
+func (s *stmt) WriteObj(w io.Writer, arg drv.Value) (int, fieldType, error) {
 	c := s.c
 	switch v := arg.(type) {
 	case int64:
 		binary.LittleEndian.PutUint64(c.scratch[0:8], uint64(v))
-		_, err := c.Write(c.scratch[:8])
-		return err
+		_, err := w.Write(c.scratch[:8])
+		return 8, fieldTypeLongLong, err
 	case float64:
 		binary.LittleEndian.PutUint64(c.scratch[0:8], uint64(math.Float64bits(v)))
-		_, err := c.Write(c.scratch[:8])
-		return err
+		_, err := w.Write(c.scratch[:8])
+		return 8, fieldTypeDouble, err
 	case bool:
 		if v {
 			c.scratch[0] = 1
 		} else {
 			c.scratch[0] = 0
 		}
-		_, err := c.Write(c.scratch[:1])
-		return err
+		_, err := w.Write(c.scratch[:1])
+		return 1, fieldTypeTiny, err
 	case []byte:
-		_, err := c.WriteLengthEncodedInt(uint64(len(v)), false) // write
+		n, err := c.WriteLengthEncodedInt(w, uint64(len(v)))
 		if err != nil {
-			return err
+			return 0, fieldTypeString, err
 		}
 
-		_, err = c.Write(v)
+		n2, err := w.Write(v)
 		if err != nil {
-			return err
+			return 0, fieldTypeString, err
 		}
+		return n + n2, fieldTypeString, nil
 	case string:
-		_, err := c.WriteLengthEncodedInt(uint64(len(v)), false) // write
+		n, err := c.WriteLengthEncodedInt(w, uint64(len(v)))
 		if err != nil {
-			return err
+			return 0, fieldTypeString, err
 		}
 
-		_, err = io.WriteString(c, v)
+		n2, err := io.WriteString(w, v)
 		if err != nil {
-			return err
+			return 0, fieldTypeString, err
 		}
+		return n + n2, fieldTypeString, nil
 	case time.Time:
 		size := 0
 
@@ -315,13 +318,13 @@ func (s *stmt) WriteObj(arg drv.Value) error {
 		}
 		c.scratch[0] = byte(size - 1)
 
-		_, err := c.Write(c.scratch[:size])
-		return err
+		n, err := w.Write(c.scratch[:size])
+		return n, fieldTypeTimestamp, err
 	default:
 		break
 	}
 
-	return fmt.Errorf("Can't convert type: %T", arg)
+	return 0, 0, fmt.Errorf("Can't convert type: %T", arg)
 }
 
 var _ drv.Stmt = (*stmt)(nil)
