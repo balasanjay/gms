@@ -19,8 +19,8 @@ func readExactly(r io.Reader, buf []byte) error {
 	return nil
 }
 
-func (c *conn) ReadLengthEncodedInt() (uint64, error) {
-	err := readExactly(c, c.scratch[:1])
+func (c *conn) ReadLengthEncodedInt(r io.Reader) (uint64, error) {
+	err := readExactly(r, c.scratch[:1])
 	if err != nil {
 		return 0, err
 	}
@@ -41,7 +41,7 @@ func (c *conn) ReadLengthEncodedInt() (uint64, error) {
 		return 0, errors.New("unknown length encoded integer")
 	}
 
-	err = readExactly(c, c.scratch[:intSize])
+	err = readExactly(r, c.scratch[:intSize])
 	if err != nil {
 		return 0, err
 	}
@@ -55,7 +55,7 @@ func (c *conn) ReadLengthEncodedInt() (uint64, error) {
 }
 
 func (c *conn) SkipLengthEncodedString() error {
-	strSize, err := c.ReadLengthEncodedInt()
+	strSize, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
 		return err
 	}

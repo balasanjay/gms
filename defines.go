@@ -1,5 +1,9 @@
 package gms
 
+import (
+	"errors"
+)
+
 type flushPolicy bool
 
 const (
@@ -115,3 +119,31 @@ const (
 	flagUnknown3
 	flagUnknown4
 )
+
+type results struct {
+	affectedRows int64
+	lastInsertId int64
+}
+
+func (r results) LastInsertId() (int64, error) {
+	return r.lastInsertId, nil
+}
+
+func (r results) RowsAffected() (int64, error) {
+	return r.affectedRows, nil
+}
+
+var (
+	errUnknownLastInsertId = errors.New("Server did not send last-insert-id")
+	errUnknownRowsAffected = errors.New("Server did not send number of rows affected")
+)
+
+type unknownResults int
+
+func (u unknownResults) LastInsertId() (int64, error) {
+	return 0, errUnknownLastInsertId
+}
+
+func (u unknownResults) RowsAffected() (int64, error) {
+	return 0, errUnknownRowsAffected
+}

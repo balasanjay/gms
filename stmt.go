@@ -8,9 +8,16 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
-	"os"
 	"time"
 )
+
+type inputFieldData struct {
+	field
+}
+
+type outputFieldData struct {
+	field
+}
 
 type stmt struct {
 	// The backing connection
@@ -21,12 +28,14 @@ type stmt struct {
 
 	// Descriptors for the input and output fields respectively. In MySQL
 	// parlance, these are the params and the columns respectively.
-	inputFields  []field
-	outputFields []field
+	inputFields  []inputFieldData
+	outputFields []outputFieldData
 }
 
 func (s *stmt) Close() error {
 	c := s.c
+	c.seqId = 0
+
 	c.scratch[0] = comStmtClose
 	binary.LittleEndian.PutUint32(c.scratch[1:5], s.id)
 
@@ -66,18 +75,32 @@ func (s *stmt) Exec(params []drv.Value) (drv.Result, error) {
 		return nil, err
 	}
 
-	if c.scratch[0] != 0 {
+	if c.scratch[0] == 0xff {
+		// This is an error packet
+
 		// TODO(sanjay): explain this and retrieve the rest of the info
 		// from the connection
 		return nil, errors.New("exec failed")
+	} else if c.scratch[0] != 0x00 {
+		// This query has result rows. The user is not interested in these, so
+		// we simply skip over them until we find 2 seperate EOF packets.
+		for i := 0; i < 2; i++ {
+			err = c.SkipPacketsUntilEOFPacket()
+			if err != nil {
+				return nil, err
+			}
+		}
+		return unknownResults(0), nil
 	}
 
-	affRows, err := c.ReadLengthEncodedInt()
+	// Otherwise, this is an OK packet, and we can
+
+	affRows, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
 		return nil, err
 	}
 
-	lastInsertId, err := c.ReadLengthEncodedInt()
+	lastInsertId, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
 		return nil, err
 	}
@@ -85,25 +108,65 @@ func (s *stmt) Exec(params []drv.Value) (drv.Result, error) {
 	return results{affectedRows: int64(affRows), lastInsertId: int64(lastInsertId)}, nil
 }
 
-type results struct {
-	affectedRows int64
-	lastInsertId int64
-}
-
-func (r results) LastInsertId() (int64, error) {
-	return r.lastInsertId, nil
-}
-
-func (r results) RowsAffected() (int64, error) {
-	return r.affectedRows, nil
-}
-
 func (s *stmt) NumInput() int {
 	return len(s.inputFields)
 }
 
-func (s *stmt) Query([]drv.Value) (drv.Rows, error) {
-	panic("unimplemented")
+func (s *stmt) Query(args []drv.Value) (drv.Rows, error) {
+	err := s.sendQuery(args)
+	if err != nil {
+		return nil, err
+	}
+
+	c := s.c
+	err = c.AdvancePacket()
+	if err != nil {
+		return nil, err
+	}
+
+	err = readExactly(c, c.scratch[:1])
+	if err != nil {
+		return nil, err
+	}
+
+	if c.scratch[0] == 0xff {
+		// This is an error packet
+
+		// TODO(sanjay): explain this and retrieve the rest of the info
+		// from the connection
+		return nil, errors.New("exec failed")
+	} else if c.scratch[0] == 0x00 {
+		// This is an OK packet, meaning no rows were there to be read.
+		_, err = io.Copy(ioutil.Discard, c)
+		if err != nil {
+			return nil, err
+		}
+
+		return &resultIter{
+			atEOF: true,
+			c:     c,
+			s:     s,
+		}, nil
+	}
+
+	c.reuseBuf.Reset()
+	_ = c.reuseBuf.WriteByte(c.scratch[0]) // in-memory buffer
+	_, err = io.Copy(c.reuseBuf, c)
+	if err != nil {
+		return nil, err
+	}
+
+	numColumns, err := c.ReadLengthEncodedInt(c.reuseBuf)
+	if err != nil {
+		return nil, err
+	} else if numColumns != uint64(len(s.outputFields)) {
+		// TODO(sanjay): fix this panic
+		panic("number of received columns mismatch")
+	}
+
+	fmt.Printf("Expecting rows with %d columns\n", numColumns)
+
+	panic("incomplete")
 }
 
 func (s *stmt) sendQuery(params []drv.Value) error {
@@ -217,7 +280,6 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 		return err
 	}
 
-	os.Exit(1)
 	return nil
 }
 

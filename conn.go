@@ -171,6 +171,7 @@ func (c *conn) Write(b []byte) (int, error) {
 
 			n, err := c.bw.Write(buf[:4])
 			// fmt.Printf("Sent header with size=%v, seq=%v\n", newWriteCap, c.seqId-1)
+
 			if err != nil {
 				return written, err
 			} else if n != 4 {
@@ -226,10 +227,13 @@ func (c *conn) readPacketHeader() error {
 	// Read sequence number
 	nextSeq = buf[3]
 
+	// fmt.Printf("Read packet with sequence number %v\n", nextSeq)
+
 	if packetLen == 0 {
+		// BUG(sanjay): this is actually OK if we are merging two packets...
 		return errors.New("unexpected 0-length packet")
 	} else if nextSeq != c.seqId {
-		return errors.New("unexpected sequence number")
+		return fmt.Errorf("Expecting sequence id %v, got %v.", c.seqId, nextSeq)
 	}
 
 	c.seqId++
@@ -475,13 +479,11 @@ func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
 	// c.scratch[9] is reserved, skip it
 	// c.scratch[10:12] is the warning count, skip it
 
-	fmt.Printf("s.id=%d, numColumns=%d, numParams=%d\n", s.id, numColumns, numParams)
-
-	s.inputFields = make([]field, numParams)
-	s.outputFields = make([]field, numColumns)
+	s.inputFields = make([]inputFieldData, numParams)
+	s.outputFields = make([]outputFieldData, numColumns)
 
 	for i := uint16(0); i < numParams; i++ {
-		err = c.ReadFieldDefinition(&s.inputFields[i])
+		err = c.ReadFieldDefinition(&s.inputFields[i].field)
 		if err != nil {
 			return nil, err
 		}
@@ -495,7 +497,7 @@ func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
 	}
 
 	for i := uint16(0); i < numColumns; i++ {
-		err = c.ReadFieldDefinition(&s.outputFields[i])
+		err = c.ReadFieldDefinition(&s.outputFields[i].field)
 		if err != nil {
 			return nil, err
 		}
@@ -530,7 +532,7 @@ func (c *conn) ReadFieldDefinition(f *field) error {
 	}
 
 	// 	Table name
-	tableNameLen, err := c.ReadLengthEncodedInt()
+	tableNameLen, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
 		return err
 	}
@@ -550,7 +552,7 @@ func (c *conn) ReadFieldDefinition(f *field) error {
 	}
 
 	// Column name
-	colNameLen, err := c.ReadLengthEncodedInt()
+	colNameLen, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
 		return err
 	}
@@ -600,6 +602,31 @@ func (c *conn) ReadEOFPacket() error {
 	}
 
 	return errors.New("Did not find EOF packet, where expected")
+}
+
+func (c *conn) SkipPacketsUntilEOFPacket() error {
+	for {
+		err := c.AdvancePacket()
+		if err != nil {
+			return err
+		}
+
+		err = readExactly(c, c.scratch[:1])
+		if err != nil {
+			return err
+		}
+
+		if c.scratch[0] == 0xfe && c.lr.N <= 4 {
+			break
+		}
+	}
+
+	_, err := io.Copy(ioutil.Discard, c)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 var (
