@@ -221,40 +221,6 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 	return nil
 }
 
-// func (s *stmt) computeSizeAndType(arg drv.Value) (int, fieldType, error) {
-// 	switch v := arg.(type) {
-// 	case int64:
-// 		// TODO(sanjay): optimize this, we can send them as tiny, short, or
-// 		// long, instead of longlong.
-// 		return 8, fieldTypeLongLong, nil
-// 	case float64:
-// 		return 8, fieldTypeDouble, nil
-// 	case bool:
-// 		return 1, fieldTypeTiny, nil
-// 	case []byte:
-// 		// TODO(sanjay): investigate what happens with super long slices
-// 		lenenc, _ := s.c.WriteLengthEncodedInt(ioutil.Discard, uint64(len(v))) // measure
-// 		return len(v) + lenenc, fieldTypeString, nil
-// 	case string:
-// 		// TODO(sanjay): investigate what happens with super long slices
-// 		lenenc, _ := s.c.WriteLengthEncodedInt(ioutil.Discard, uint64(len(v))) // measure
-// 		return len(v) + lenenc, fieldTypeString, nil
-// 	case time.Time:
-// 		if v.Nanosecond()/int(time.Microsecond) != 0 {
-// 			return 12, fieldTypeTimestamp, nil
-// 		}
-// 		if v.Second() != 0 || v.Minute() != 0 || v.Hour() != 0 {
-// 			return 8, fieldTypeTimestamp, nil
-// 		}
-// 		if v.Year() != 0 || v.Month() != 1 || v.Day() != 0 {
-// 			return 5, fieldTypeTimestamp, nil
-// 		}
-// 		return 1, fieldTypeTimestamp, nil
-// 	default:
-// 		return 0, 0, fmt.Errorf("Can't convert type: %T", arg)
-// 	}
-// }
-
 func (s *stmt) WriteObj(w io.Writer, arg drv.Value) (int, fieldType, error) {
 	c := s.c
 	switch v := arg.(type) {
