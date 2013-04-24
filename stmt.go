@@ -190,7 +190,7 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 				continue
 			}
 
-			paramSize, _, err := s.WriteObj(ioutil.Discard, params[i])
+			paramSize, _, err := s.WriteObj(globalCountingWriter, params[i])
 			if err != nil {
 				return err
 			}
@@ -288,6 +288,14 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 	}
 
 	return nil
+}
+
+var globalCountingWriter io.Writer = countingWriter(true)
+
+type countingWriter bool
+
+func (c countingWriter) Write(p []byte) (int, error) {
+	return len(p), nil
 }
 
 func (s *stmt) WriteObj(w io.Writer, arg drv.Value) (int, fieldType, error) {

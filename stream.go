@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"time"
 )
@@ -63,7 +62,7 @@ func (c *conn) SkipLengthEncodedString() error {
 	if err != nil {
 		return err
 	}
-	_, err = io.CopyN(ioutil.Discard, c, int64(strSize))
+	err = c.CopyN(globalCountingWriter, c, int64(strSize))
 	if err != nil {
 		return err
 	}
