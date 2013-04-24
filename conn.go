@@ -51,14 +51,14 @@ type conn struct {
 	seqId uint8
 
 	// Temporary writing area for many functions to avoid allocating.
-	scratch [40]byte
+	scratch [512]byte
 }
 
 func newConn(rwc io.ReadWriteCloser) *conn {
 	// TODO(sanjay): tune these
 	const (
-		defaultWriteBufSize = 8192
-		defaultReadBufSize  = 4096
+		defaultWriteBufSize = 16384
+		defaultReadBufSize  = 8192
 	)
 
 	c := &conn{}
