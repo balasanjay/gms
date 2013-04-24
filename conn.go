@@ -87,7 +87,7 @@ func newConn(rwc io.ReadWriteCloser) *conn {
 }
 
 func (c *conn) AdvancePacket() error {
-	_, err := io.Copy(ioutil.Discard, c)
+	err := c.AdvanceToEOF()
 	if err != nil {
 		return err
 	}
@@ -98,6 +98,18 @@ func (c *conn) AdvancePacket() error {
 	}
 
 	return nil
+}
+
+func (c *conn) AdvanceToEOF() error {
+	for {
+		_, err := c.Read(c.scratch[:])
+		if err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
+	panic("unreachable")
 }
 
 func (c *conn) Read(buf []byte) (int, error) {
@@ -671,7 +683,7 @@ func (c *conn) SkipPacketsUntilEOFPacket() error {
 		}
 	}
 
-	_, err := io.Copy(ioutil.Discard, c)
+	err := c.AdvanceToEOF()
 	if err != nil {
 		return err
 	}

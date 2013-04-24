@@ -144,7 +144,7 @@ func (s *stmt) Query(args []drv.Value) (drv.Rows, error) {
 		return nil, c.ErrorFromErrPacket()
 	} else if c.scratch[0] == 0x00 {
 		// This is an OK packet, meaning no rows were there to be read.
-		_, err = io.Copy(ioutil.Discard, c)
+		err = c.AdvanceToEOF()
 		if err != nil {
 			return nil, err
 		}

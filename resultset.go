@@ -59,7 +59,7 @@ func (r *resultIter) Next(dest []drv.Value) error {
 	// packet, and return io.EOF.
 	if c.scratch[0] == 0xfe && c.lr.N <= 4 {
 		r.atEOF = true
-		_, err = io.Copy(ioutil.Discard, c)
+		err = c.AdvanceToEOF()
 		if err != nil {
 			return err
 		}
