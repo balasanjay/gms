@@ -93,7 +93,8 @@ func (s *stmt) Exec(params []drv.Value) (drv.Result, error) {
 		return unknownResults(0), nil
 	}
 
-	// Otherwise, this is an OK packet, and we can
+	// Otherwise, this is an OK packet, and we can simply pull out the number
+	// of affected rows and last insert id.
 
 	affRows, err := c.ReadLengthEncodedInt(c)
 	if err != nil {
@@ -149,24 +150,14 @@ func (s *stmt) Query(args []drv.Value) (drv.Rows, error) {
 		}, nil
 	}
 
-	c.reuseBuf.Reset()
-	_ = c.reuseBuf.WriteByte(c.scratch[0]) // in-memory buffer
-	_, err = io.Copy(c.reuseBuf, c)
+	// We don't need to read the column definitions because we parsed them when
+	// we prepared the statement.
+	err = c.SkipPacketsUntilEOFPacket()
 	if err != nil {
 		return nil, err
 	}
 
-	numColumns, err := c.ReadLengthEncodedInt(c.reuseBuf)
-	if err != nil {
-		return nil, err
-	} else if numColumns != uint64(len(s.outputFields)) {
-		// TODO(sanjay): fix this panic
-		panic("number of received columns mismatch")
-	}
-
-	fmt.Printf("Expecting rows with %d columns\n", numColumns)
-
-	panic("incomplete")
+	return &resultIter{c: c, s: s}, nil
 }
 
 func (s *stmt) sendQuery(params []drv.Value) error {
@@ -188,8 +179,12 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 		size += 1                   // new-params-bound
 		size += numInputs * 2       // types
 
-		for _, v := range params {
-			paramSize, _, err := s.WriteObj(ioutil.Discard, v)
+		for i := range params {
+			if params[i] == nil {
+				continue
+			}
+
+			paramSize, _, err := s.WriteObj(ioutil.Discard, params[i])
 			if err != nil {
 				return err
 			}
@@ -231,7 +226,7 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 				break
 			}
 
-			if params[i] == nil {
+			if params[idx] == nil {
 				c.scratch[0] |= 1 << (idx % 8)
 			}
 		}
@@ -249,10 +244,16 @@ func (s *stmt) sendQuery(params []drv.Value) error {
 	}
 
 	// Types
-	for _, v := range params {
-		_, ftype, err := s.WriteObj(ioutil.Discard, v)
-		if err != nil {
-			return err
+	for i := range params {
+		var ftype fieldType
+
+		if params[i] != nil {
+			_, ftype, err = s.WriteObj(ioutil.Discard, params[i])
+			if err != nil {
+				return err
+			}
+		} else {
+			ftype = 0
 		}
 
 		c.scratch[0] = byte(ftype)

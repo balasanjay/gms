@@ -131,7 +131,7 @@ func (c *conn) Read(buf []byte) (int, error) {
 // BeginPacket sets up the conn to write a packet with size bytes.
 func (c *conn) BeginPacket(size int64) {
 	if c.curPacketSizeRemaining != 0 || size == 0 || c.writeCap != 0 {
-		panic("internal error, miscalculated packet size")
+		panic(fmt.Sprintf("internal error, miscalculated packet size, still %v bytes on previous packet", c.curPacketSizeRemaining))
 	}
 
 	c.curPacketSizeRemaining = size
@@ -139,7 +139,7 @@ func (c *conn) BeginPacket(size int64) {
 
 func (c *conn) EndPacket(flush flushPolicy) error {
 	if c.curPacketSizeRemaining != 0 || c.writeCap != 0 {
-		panic("internal error, miscalculated packet size")
+		panic(fmt.Sprintf("internal error, miscalculated packet size, still %v bytes on previous packet", c.curPacketSizeRemaining))
 	}
 
 	if !flush {
@@ -580,8 +580,8 @@ func (c *conn) ReadFieldDefinition(f *field) error {
 		return err
 	}
 
-	f.ftype = fieldType(c.scratch[6])
-	f.flag = fieldFlag(binary.LittleEndian.Uint16(c.scratch[7:9]))
+	f.ftype = fieldType(c.scratch[7])
+	f.flag = fieldFlag(binary.LittleEndian.Uint16(c.scratch[8:10]))
 
 	return nil
 }

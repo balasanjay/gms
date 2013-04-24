@@ -88,7 +88,7 @@ func (c *conn) WriteLengthEncodedInt(w io.Writer, n uint64) (int, error) {
 		binary.LittleEndian.PutUint64(c.scratch[1:9], n)
 	}
 
-	nw, err := c.Write(c.scratch[0:size])
+	nw, err := w.Write(c.scratch[0:size])
 	if err != nil {
 		return 0, err
 	} else if nw != size {

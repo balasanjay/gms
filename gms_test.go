@@ -19,17 +19,18 @@ func TestSimple(t *testing.T) {
 	t.Logf("sql.Open took %v", time.Since(before))
 
 	fmt.Printf("Before\n")
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS test (value BOOL);")
-	fmt.Printf("After CREATE TABLE\n")
-	_, err = db.Exec("INSERT INTO test VALUES (?)", false)
-	fmt.Printf("After INSERT\n")
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS test (value BOOL, value2 VARCHAR(20) NOT NULL);")
+	fmt.Printf("After CREATE TABLE, err=%v\n", err)
+	_, err = db.Exec("INSERT INTO test VALUES (?, ?)", nil, "from nil land")
+	fmt.Printf("After INSERT, err=%v\n", err)
 	_, err = db.Exec("SELECT * FROM test WHERE value = ?;", false)
-	fmt.Printf("After SELECT\n")
+	fmt.Printf("After SELECT, err=%v\n", err)
 
-	iter, err := db.Query("SELECT * FROM test WHERE value = ?", false)
+	iter, err := db.Query("SELECT value, value2 FROM test WHERE 1 = 1")
 	for iter.Next() {
-		var value bool
-		err = iter.Scan(&value)
+		var value *bool
+		var value2 *string
+		err = iter.Scan(&value, &value2)
 		if err != nil {
 			t.Errorf("unexpected Scan error: %v", err)
 			break
