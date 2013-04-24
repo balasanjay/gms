@@ -182,7 +182,7 @@ func (c *conn) ReadValue(o *outputFieldData, dst *drv.Value) error {
 		// TODO(sanjay): if this uint64->int[64] conversion results in a negative
 		// number, we will have bad times.
 		c.reuseBuf.Grow(int(length))
-		_, err = io.CopyN(c.reuseBuf, c, int64(length))
+		err = c.CopyN(c.reuseBuf, c, int64(length))
 		if err == io.EOF {
 			return io.ErrUnexpectedEOF
 		} else if err != nil {

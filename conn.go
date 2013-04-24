@@ -601,7 +601,7 @@ func (c *conn) ReadFieldDefinition(f *field) error {
 	c.reuseBuf.Reset()
 
 	c.reuseBuf.Grow(int(tableNameLen))
-	_, err = io.CopyN(c.reuseBuf, c, int64(tableNameLen))
+	err = c.CopyN(c.reuseBuf, c, int64(tableNameLen))
 	if err != nil {
 		return err
 	}
@@ -623,7 +623,7 @@ func (c *conn) ReadFieldDefinition(f *field) error {
 	}
 
 	c.reuseBuf.Grow(int(colNameLen))
-	_, err = io.CopyN(c.reuseBuf, c, int64(colNameLen))
+	err = c.CopyN(c.reuseBuf, c, int64(colNameLen))
 	if err != nil {
 		return err
 	}
@@ -687,6 +687,38 @@ func (c *conn) SkipPacketsUntilEOFPacket() error {
 		return err
 	}
 
+	return nil
+}
+
+// This is a re-implementation of io.CopyN that uses c.scratch for its
+// temporary buffer. Also, unlike io.CopyN, it is CopyExactlyN, not CopyUptoN.
+func (c *conn) CopyN(dst io.Writer, src io.Reader, n int64) error {
+	for n > 0 {
+		buf := c.scratch[:]
+		if int64(len(buf)) > n {
+			buf = buf[:n]
+		}
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			if nw > 0 {
+				n -= int64(nw)
+			}
+			if ew != nil {
+				return ew
+			}
+			if nr != nw {
+				return io.ErrShortWrite
+			}
+		}
+		if er == io.EOF && n > 0 {
+			return io.ErrUnexpectedEOF
+		} else if er == io.EOF {
+			return nil
+		} else if er != nil {
+			return er
+		}
+	}
 	return nil
 }
 
