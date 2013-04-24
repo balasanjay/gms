@@ -21,20 +21,25 @@ func TestSimple(t *testing.T) {
 	fmt.Printf("Before\n")
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS test (value BOOL, value2 VARCHAR(20) NOT NULL);")
 	fmt.Printf("After CREATE TABLE, err=%v\n", err)
-	_, err = db.Exec("INSERT INTO test VALUES (?, ?)", nil, "from nil land")
+	_, err = db.Exec("INSERT INTO test VALUES (?, ?)", nil, "hello world")
 	fmt.Printf("After INSERT, err=%v\n", err)
 	_, err = db.Exec("SELECT * FROM test WHERE value = ?;", false)
 	fmt.Printf("After SELECT, err=%v\n", err)
 
-	iter, err := db.Query("SELECT value, value2 FROM test WHERE 1 = 1")
+	iter, err := db.Query("SELECT value, value2 FROM test")
 	for iter.Next() {
 		var value *bool
-		var value2 *string
+		var value2 string
 		err = iter.Scan(&value, &value2)
 		if err != nil {
 			t.Errorf("unexpected Scan error: %v", err)
 			break
 		}
 	}
+	err = iter.Err()
+	if err != nil {
+		fmt.Printf("iteration error: %v\n", err)
+	}
+
 	iter.Close()
 }

@@ -17,6 +17,18 @@ type inputFieldData struct {
 
 type outputFieldData struct {
 	field
+
+	// The following fields are used when parsing a column from the binary
+	// wire protocol.
+
+	isNull bool
+
+	// If bufEndIdx != -1, then this field's data is inside the connection's
+	// reusable buffer, with the last byte of this field's data being at
+	// bufEndIdx-1. We do it this way instead of storing a slice, so that if the
+	// buffer resizes when we are writing to it, we don't capture any of the old
+	// slices, and keep them alive for longer than necessary.
+	bufEndIdx int
 }
 
 type stmt struct {
@@ -77,10 +89,7 @@ func (s *stmt) Exec(params []drv.Value) (drv.Result, error) {
 
 	if c.scratch[0] == 0xff {
 		// This is an error packet
-
-		// TODO(sanjay): explain this and retrieve the rest of the info
-		// from the connection
-		return nil, errors.New("exec failed")
+		return nil, c.ErrorFromErrPacket()
 	} else if c.scratch[0] != 0x00 {
 		// This query has result rows. The user is not interested in these, so
 		// we simply skip over them until we find 2 seperate EOF packets.
@@ -132,10 +141,7 @@ func (s *stmt) Query(args []drv.Value) (drv.Rows, error) {
 
 	if c.scratch[0] == 0xff {
 		// This is an error packet
-
-		// TODO(sanjay): explain this and retrieve the rest of the info
-		// from the connection
-		return nil, errors.New("exec failed")
+		return nil, c.ErrorFromErrPacket()
 	} else if c.scratch[0] == 0x00 {
 		// This is an OK packet, meaning no rows were there to be read.
 		_, err = io.Copy(ioutil.Discard, c)

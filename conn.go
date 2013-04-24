@@ -513,6 +513,52 @@ func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
 	return s, nil
 }
 
+// Read the data form an error packet and make a Go error value.
+// This function assumes that you've already read the first packet of the
+// error packet.
+func (c *conn) ErrorFromErrPacket() error {
+	var ret serverError
+
+	// Read the error code
+	err := readExactly(c, c.scratch[:2])
+	if err != nil {
+		return err
+	}
+	ret.errorCode = binary.LittleEndian.Uint16(c.scratch[:2])
+
+	// Skip the '#' character
+	err = readExactly(c, c.scratch[:1])
+	if err != nil {
+		return err
+	}
+
+	// Store the SQL state
+	err = readExactly(c, ret.sqlState[:])
+	if err != nil {
+		return err
+	}
+
+	// Read the human readable message.
+	c.reuseBuf.Reset()
+	c.reuseBuf.Grow(int(c.lr.N))
+	_, err = io.Copy(c.reuseBuf, c)
+	if err != nil {
+		return err
+	}
+	ret.errorMsg = c.reuseBuf.String()
+	return &ret
+}
+
+type serverError struct {
+	errorCode uint16
+	sqlState  [5]byte
+	errorMsg  string
+}
+
+func (s *serverError) Error() string {
+	return fmt.Sprintf("MySQL Server Error. Error Code = %d, Sql State = #%s, Message = %q", s.errorCode, s.sqlState, s.errorMsg)
+}
+
 func (c *conn) ReadFieldDefinition(f *field) error {
 	err := c.AdvancePacket()
 	if err != nil {

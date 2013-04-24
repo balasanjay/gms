@@ -74,7 +74,8 @@ func (r *resultIter) Next(dest []drv.Value) error {
 	// Otherwise, we've reached a data packet. First, deal with the NULL bitmap.
 	curBitmapByte := -1
 	const offset = 2
-	for i := 0; i < len(s.outputFields); i++ {
+	for i := range s.outputFields {
+		f := &s.outputFields[i]
 		thisBitmapByte := (i + offset) / 8
 		if thisBitmapByte != curBitmapByte {
 			err = readExactly(c, c.scratch[:1])
@@ -85,16 +86,44 @@ func (r *resultIter) Next(dest []drv.Value) error {
 		}
 
 		bitIdx := uint((i + offset) % 8)
-		if (c.scratch[0] & byte(1<<bitIdx)) != 0 {
-			fmt.Println("NULL field")
-		} else {
-			fmt.Println("Non-NULL field")
+		f.isNull = (c.scratch[0] & byte(1<<bitIdx)) != 0
+	}
+
+	c.reuseBuf.Reset()
+	for i := range s.outputFields {
+		f := &s.outputFields[i]
+		if f.isNull {
+			dest[i] = nil
+			continue
+		}
+		err = c.ReadValue(f, &dest[i])
+		if err != nil {
+			return err
 		}
 	}
 
-	_, err = io.Copy(ioutil.Discard, c)
-	if err != nil {
-		return err
+	bufStartIdx := 0
+	buf := c.reuseBuf.Bytes()
+	for i := range s.outputFields {
+		f := &s.outputFields[i]
+		if f.isNull {
+			continue
+		}
+		if f.bufEndIdx == -1 {
+			continue
+		}
+		dest[i] = buf[bufStartIdx:f.bufEndIdx]
+		bufStartIdx = f.bufEndIdx
 	}
+
+	// Sanity-check that we've exhausted a packet
+	if c.lr.N != 0 {
+		_, err = io.Copy(ioutil.Discard, c)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("data packet has %d more bytes than expected", c.lr.N)
+	}
+
 	return nil
 }
