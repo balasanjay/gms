@@ -425,7 +425,11 @@ func (c *conn) Begin() (drv.Tx, error) {
 }
 
 func (c *conn) Close() error {
-	panic("unimplemented")
+	err := c.rwc.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *conn) Prepare(sqlStr string) (drv.Stmt, error) {
