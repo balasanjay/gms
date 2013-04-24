@@ -100,15 +100,7 @@ func (c *conn) AdvancePacket() error {
 }
 
 func (c *conn) AdvanceToEOF() error {
-	for {
-		_, err := c.Read(c.scratch[:])
-		if err == io.EOF {
-			return nil
-		} else if err != nil {
-			return err
-		}
-	}
-	panic("unreachable")
+	return c.CopyN(globalCountingWriter, c, c.lr.N)
 }
 
 func (c *conn) Read(buf []byte) (int, error) {
